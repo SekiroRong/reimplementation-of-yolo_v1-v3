@@ -20,8 +20,11 @@ class YoloV1DataSet(Dataset):
     def __init__(self, imgs_dir="D:\VOC2012\VOCdevkit\VOC2012\JPEGImages", annotations_dir="D:\VOC2012\VOCdevkit\VOC2012\Annotations",
                  img_size=448, S=7, B=2,
                  ClassesFile="D:\VOC2012\VOCdevkit\VOC2012\class.data", label_smooth_value = 0.05):  # 图片路径、注解文件路径、图片尺寸、每个grid cell预测的box数量、类别文件
-        img_names = os.listdir(imgs_dir)
-        img_names.sort()
+        img_names = []
+        with open("all_set.txt", "r") as f:
+            for line in f.readlines():
+                img_names.append(line.strip('\n'))  # 去掉列表中每一个元素的换行符
+        # img_names.sort()
         self.transfrom = transforms.Compose([
             transforms.ToTensor(),  # height * width * channel -> channel * height * width
             transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))  # 归一化后.不容易产生梯度爆炸的问题

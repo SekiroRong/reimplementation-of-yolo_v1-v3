@@ -16,36 +16,73 @@ from torch.utils.data import DataLoader
 import torch.optim as optim
 
 from yolo_v3_model import load_model
-from yolo_v3_dataset import _create_data_loader
+from yolo_v3_dataset import _create_data_loader, _create_validation_data_loader
 from yolo_v3_loss import compute_loss
+from yolo_v3_logger import Logger
+from yolo_v3_test import _evaluate
+
+from terminaltables import AsciiTable
+
+def to_cpu(tensor):
+    return tensor.detach().cpu()
 
 def run():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = 'yolov3.cfg'
     pretrained_weights = None
-    n_cpu = 8
+    n_cpu = 2
     multiscale_training = True
-    epochs = 300
+    epochs = 2
+    checkpoint_interval = 1
+    evaluation_interval = 1
+
+    pretrained_weights = ''
+
+    #似乎是training时显示信息量的控制字
+    verbose = True
+
+    #evaluation的门槛
+    iou_thres = 0.5
+    conf_thres = 0.1
+    nms_thres = 0.5
 
     #VOC数据集路径
-    imgs_dir = "D:\VOC2012\VOCdevkit\VOC2012\JPEGImages"
-    annotations_dir = "D:\VOC2012\VOCdevkit\VOC2012\Annotations"
+    train_dir = "train_set.txt"
+    val_dir = "validation_set.txt"
     ClassesFile = "D:\VOC2012\VOCdevkit\VOC2012\class.data"
+
+    #读取class_names
+    with open(ClassesFile, "r") as fp:
+        class_names = fp.read().splitlines()
+
+    logdir = 'log'
 
     #load model
     model = load_model(model, pretrained_weights)
+    print('load model\n')
+
+    #Tensor_board
+    logger = Logger(logdir)
 
     #待研究
     mini_batch_size = model.hyperparams['batch'] // model.hyperparams['subdivisions']
 
+    # Load training dataloader
     dataloader = _create_data_loader(
         mini_batch_size,
         model.hyperparams['height'],
         n_cpu,
-        imgs_dir,
-        annotations_dir,
+        train_dir,
         ClassesFile,
         multiscale_training=True)
+
+    # Load validation dataloader
+    validation_dataloader = _create_validation_data_loader(
+        mini_batch_size,
+        model.hyperparams['height'],
+        n_cpu,
+        val_dir,
+        ClassesFile)
 
     # Create optimizer
 
@@ -83,9 +120,7 @@ def run():
 
             loss.backward()
 
-            ###############
             # Run optimizer
-            ###############
 
             if batches_done % model.hyperparams['subdivisions'] == 0:
                 # Adapt learning rate
@@ -99,8 +134,8 @@ def run():
                     for threshold, value in model.hyperparams['lr_steps']:
                         if batches_done > threshold:
                             lr *= value
-                # Log the learning rate
-                logger.scalar_summary("train/learning_rate", lr, batches_done)
+                # # Log the learning rate
+                # logger.scalar_summary("train/learning_rate", lr, batches_done)
                 # Set learning rate
                 for g in optimizer.param_groups:
                     g['lr'] = lr
@@ -110,45 +145,41 @@ def run():
                 # Reset gradients
                 optimizer.zero_grad()
 
-            # ############
-            # Log progress
-            # ############
-            if args.verbose:
-                print(AsciiTable(
-                    [
-                        ["Type", "Value"],
-                        ["IoU loss", float(loss_components[0])],
-                        ["Object loss", float(loss_components[1])],
-                        ["Class loss", float(loss_components[2])],
-                        ["Loss", float(loss_components[3])],
-                        ["Batch loss", to_cpu(loss).item()],
-                    ]).table)
+            # # ############
+            # # Log progress
+            # # ############
+            # if args.verbose:
+            #     print(AsciiTable(
+            #         [
+            #             ["Type", "Value"],
+            #             ["IoU loss", float(loss_components[0])],
+            #             ["Object loss", float(loss_components[1])],
+            #             ["Class loss", float(loss_components[2])],
+            #             ["Loss", float(loss_components[3])],
+            #             ["Batch loss", to_cpu(loss).item()],
+            #         ]).table)
 
-            # Tensorboard logging
-            tensorboard_log = [
-                ("train/iou_loss", float(loss_components[0])),
-                ("train/obj_loss", float(loss_components[1])),
-                ("train/class_loss", float(loss_components[2])),
-                ("train/loss", to_cpu(loss).item())]
-            logger.list_of_scalars_summary(tensorboard_log, batches_done)
+            # # Tensorboard logging
+            # tensorboard_log = [
+            #     ("train/iou_loss", float(loss_components[0])),
+            #     ("train/obj_loss", float(loss_components[1])),
+            #     ("train/class_loss", float(loss_components[2])),
+            #     ("train/loss", to_cpu(loss).item())]
+            # logger.list_of_scalars_summary(tensorboard_log, batches_done)
 
             model.seen += imgs.size(0)
 
-        # #############
         # Save progress
-        # #############
 
-        # Save model to checkpoint file
-        if epoch % args.checkpoint_interval == 0:
-            checkpoint_path = f"checkpoints/yolov3_ckpt_{epoch}.pth"
-            print(f"---- Saving checkpoint to: '{checkpoint_path}' ----")
-            torch.save(model.state_dict(), checkpoint_path)
+        # # Save model to checkpoint file
+        # if epoch % checkpoint_interval == 0:
+        #     checkpoint_path = f"checkpoints/yolov3_ckpt_{epoch}.pth"
+        #     print(f"---- Saving checkpoint to: '{checkpoint_path}' ----")
+        #     torch.save(model.state_dict(), checkpoint_path)
 
-        # ########
         # Evaluate
-        # ########
 
-        if epoch % args.evaluation_interval == 0:
+        if epoch % evaluation_interval == 0:
             print("\n---- Evaluating Model ----")
             # Evaluate the model on the validation set
             metrics_output = _evaluate(
@@ -156,10 +187,10 @@ def run():
                 validation_dataloader,
                 class_names,
                 img_size=model.hyperparams['height'],
-                iou_thres=args.iou_thres,
-                conf_thres=args.conf_thres,
-                nms_thres=args.nms_thres,
-                verbose=args.verbose
+                iou_thres=iou_thres,
+                conf_thres=conf_thres,
+                nms_thres=nms_thres,
+                verbose=verbose
             )
 
             if metrics_output is not None:

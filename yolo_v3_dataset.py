@@ -21,6 +21,12 @@ import torchvision.transforms as transforms
 import numpy as np
 import torch.nn.functional as F
 from yolo_v3_augmentations import AUGMENTATION_TRANSFORMS
+from yolo_v3_transforms import DEFAULT_TRANSFORMS
+
+#待看
+def resize(image, size):
+    image = F.interpolate(image.unsqueeze(0), size=size, mode="nearest").squeeze(0)
+    return image
 
 #设置随机种子
 def worker_seed_set(worker_id):
@@ -48,7 +54,6 @@ mytransform = transforms.Compose([
 def _create_data_loader(batch_size, img_size,
                         n_cpu,
                         imgs_dir,
-                        annotations_dir,
                         ClassesFile,
                         multiscale_training=False):
     """Creates a DataLoader for training.
@@ -69,7 +74,6 @@ def _create_data_loader(batch_size, img_size,
         multiscale=multiscale_training,
         transform=AUGMENTATION_TRANSFORMS,
         imgs_dir=imgs_dir,
-        annotations_dir=annotations_dir,
         ClassesFile=ClassesFile)
     dataloader = DataLoader(
         dataset,
@@ -81,18 +85,47 @@ def _create_data_loader(batch_size, img_size,
         worker_init_fn=worker_seed_set)
     return dataloader
 
+def _create_validation_data_loader(batch_size, img_size,
+                                    n_cpu,
+                                    imgs_dir,
+                                    ClassesFile):
+    """
+    Creates a DataLoader for validation.
+
+    :param img_path: Path to file containing all paths to validation images.
+    :type img_path: str
+    :param batch_size: Size of each image batch
+    :type batch_size: int
+    :param img_size: Size of each image dimension for yolo
+    :type img_size: int
+    :param n_cpu: Number of cpu threads to use during batch generation
+    :type n_cpu: int
+    :return: Returns DataLoader
+    :rtype: DataLoader
+    """
+    dataset = ListDataset(
+        img_size=img_size,
+        multiscale=False,
+        transform=DEFAULT_TRANSFORMS,
+        imgs_dir=imgs_dir,
+        ClassesFile=ClassesFile)
+    dataloader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=n_cpu,
+        pin_memory=True,
+        collate_fn=dataset.collate_fn)
+    return dataloader
 class ListDataset(Dataset):
-    def __init__(self,imgs_dir,annotations_dir,ClassesFile, img_size=416, multiscale=True, transform=None):
-        img_names = os.listdir(imgs_dir)
-        img_names.sort()
-        self.img_path = []
-        for img_name in img_names:
-            self.img_path.append(os.path.join(imgs_dir, img_name))
-        annotation_names = os.listdir(annotations_dir)
-        annotation_names.sort()  # 图片和文件排序后可以按照相同索引对应
-        self.annotation_path = []
-        for annotation_name in annotation_names:
-            self.annotation_path.append(os.path.join(annotations_dir, annotation_name))
+    def __init__(self,imgs_dir,ClassesFile, img_size=416, multiscale=True, transform=None):
+        with open(imgs_dir, "r") as file:
+            self.img_files = file.readlines()
+
+        self.label_files = []
+        for path in self.img_files:
+            label_dir = "label" + '\\' + path.split('\\')[-1].rstrip() + ".txt"
+            self.label_files.append(label_dir)
 
         self.ClassNameToClassIndex = {}
         classIndex = 0
@@ -111,76 +144,95 @@ class ListDataset(Dataset):
         self.max_size = self.img_size + 3 * 32
         self.batch_count = 0
         self.transform = transform
-        self.getGroundTruth()
-        self.data = [list([self.img_path[i], self.ground_truth[i]]) for i in range(len(self.img_path))]
+        # self.getGroundTruth()
+        # self.data = [list([self.img_path[i], self.ground_truth[i]]) for i in range(len(self.img_path))]
         self.__getitem__(0)
 
-    def getGroundTruth(self):
-        self.ground_truth = np.zeros(shape=(len(self.img_path), 5 * self.max_obj))
-        ground_truth_index = 0
-        for annotation_file in self.annotation_path:
-            ground_truth = []
-            # 解析xml文件--标注文件
-            tree = ET.parse(annotation_file)
-            annotation_xml = tree.getroot()
-            # 计算 目标尺寸 对于 原图尺寸 width的比例
-            width = (int)(annotation_xml.find("size").find("width").text)
-            # 计算 目标尺寸 对于 原图尺寸 height的比例
-            height = (int)(annotation_xml.find("size").find("height").text)
-            # 一个注解文件可能有多个object标签，一个object标签内部包含一个bnd标签
-            objects_xml = annotation_xml.findall("object")
-            obj_num = 0
-            for object_xml in objects_xml:
-                # 获取目标的名字
-                class_name = object_xml.find("name").text
-                if class_name not in self.ClassNameToClassIndex:  # 不属于我们规定的类
-                    continue
-                bnd_xml = object_xml.find("bndbox")
-                # 目标尺度放缩
-                xmin = (int)((float)(bnd_xml.find("xmin").text))
-                ymin = (int)((float)(bnd_xml.find("ymin").text))
-                xmax = (int)((float)(bnd_xml.find("xmax").text))
-                ymax = (int)((float)(bnd_xml.find("ymax").text))
-                # 目标中心点
-                x_center = (xmin + xmax) / 2 / width
-                y_center = (ymin + ymax) / 2 / height
-                w = (xmax - xmin) / width
-                h = (ymax - ymin) / height
-                # 真实物体的list
-                ClassIndex = self.ClassNameToClassIndex[class_name]
+    #Deprecated
+    # def getGroundTruth(self):
+    #     self.ground_truth = np.zeros(shape=(len(self.img_path), 5 * self.max_obj))
+    #     ground_truth_index = 0
+    #     for annotation_file in self.annotation_path:
+    #         # 解析xml文件--标注文件
+    #         tree = ET.parse(annotation_file)
+    #         annotation_xml = tree.getroot()
+    #         # 计算 目标尺寸 对于 原图尺寸 width的比例
+    #         width = (int)(annotation_xml.find("size").find("width").text)
+    #         # 计算 目标尺寸 对于 原图尺寸 height的比例
+    #         height = (int)(annotation_xml.find("size").find("height").text)
+    #         # 一个注解文件可能有多个object标签，一个object标签内部包含一个bnd标签
+    #         objects_xml = annotation_xml.findall("object")
+    #         obj_num = 0
+    #         for object_xml in objects_xml:
+    #             # 获取目标的名字
+    #             class_name = object_xml.find("name").text
+    #             if class_name not in self.ClassNameToClassIndex:  # 不属于我们规定的类
+    #                 continue
+    #             bnd_xml = object_xml.find("bndbox")
+    #             # 目标尺度放缩
+    #             xmin = (int)((float)(bnd_xml.find("xmin").text))
+    #             ymin = (int)((float)(bnd_xml.find("ymin").text))
+    #             xmax = (int)((float)(bnd_xml.find("xmax").text))
+    #             ymax = (int)((float)(bnd_xml.find("ymax").text))
+    #             # 目标中心点
+    #             x_center = (xmin + xmax) / 2 / width
+    #             y_center = (ymin + ymax) / 2 / height
+    #             w = (xmax - xmin) / width
+    #             h = (ymax - ymin) / height
+    #             # 真实物体的list
+    #             ClassIndex = self.ClassNameToClassIndex[class_name]
+    #
+    #             #yolo的label格式：class，x_center, y_center, w, h
+    #             ground_box = list([ClassIndex, x_center, y_center, w, h])
+    #             # print(ground_box)
+    #
+    #             self.ground_truth[ground_truth_index][obj_num*5:obj_num*5+5] = ground_box
+    #             # print(self.ground_truth[ground_truth_index])
+    #
+    #             obj_num = obj_num + 1
+    #
+    #         ground_truth_index = ground_truth_index + 1
+    #     self.ground_truth = torch.Tensor(self.ground_truth)
+    # def __getitem__(self, index):
+    #     # height * width * channel
+    #     img_data = cv2.imread(self.data[index][0])
+    #     img_data = cv2.resize(img_data, (448, 448), interpolation=cv2.INTER_AREA)
+    #     boxes = np.array(self.data[index][1]).reshape(-1, 5)#清除冗余的[0.,0.,0.,0.,0.]
+    #     idx = np.argwhere(np.all(boxes[:, ...] == 0, axis=1))
+    #     boxes = np.delete(boxes, idx, axis=0)
+    #     # print(boxes)
+    #     if self.transform:
+    #         try:
+    #             img, bb_targets = self.transform((img_data, boxes))
+    #             # print(bb_targets)
+    #         except Exception:
+    #             print("Could not apply transform.")
+    #             return
+    #
+    #     return self.data[index][0], img_data, bb_targets
 
-                #yolo的label格式：class，x_center, y_center, w, h
-                ground_box = list([ClassIndex, x_center, y_center, w, h])
-                # print(ground_box)
-
-                self.ground_truth[ground_truth_index][obj_num*5:obj_num*5+5] = ground_box
-                # print(self.ground_truth[ground_truth_index])
-
-                obj_num = obj_num + 1
-
-            ground_truth_index = ground_truth_index + 1
-        self.ground_truth = torch.Tensor(self.ground_truth)
     def __getitem__(self, index):
-        # height * width * channel
-        img_data = cv2.imread(self.data[index][0])
-        img_data = cv2.resize(img_data, (448, 448), interpolation=cv2.INTER_AREA)
-        boxes = np.array(self.data[index][1]).reshape(-1, 5)#清除冗余的[0.,0.,0.,0.,0.]
-        idx = np.argwhere(np.all(boxes[:, ...] == 0, axis=1))
-        boxes = np.delete(boxes, idx, axis=0)
-        # print(boxes)
+
+        #  Image
+        # print(self.img_files)
+        img_path = self.img_files[index % len(self.img_files)].rstrip()
+        # print(img_path)
+        img = np.array(Image.open(img_path).convert('RGB'), dtype=np.uint8)
+
+        #  Label
+        label_path = self.label_files[index % len(self.img_files)].rstrip()
+        boxes = np.loadtxt(label_path).reshape(-1, 5)
+
+        #  Transform
         if self.transform:
             try:
-                img, bb_targets = self.transform((img_data, boxes))
-                # print(bb_targets)
+                img, bb_targets = self.transform((img, boxes))
             except Exception:
                 print("Could not apply transform.")
                 return
 
-        return self.data[index][0], img_data, bb_targets
+        return img_path, img, bb_targets
 
-    def resize(image, size):
-        image = F.interpolate(image.unsqueeze(0), size=size, mode="nearest").squeeze(0)
-        return image
     def collate_fn(self, batch):
         self.batch_count += 1
 
@@ -205,7 +257,19 @@ class ListDataset(Dataset):
         return paths, imgs, bb_targets
 
     def __len__(self):
-        return len(self.img_path)
+        return len(self.img_files)
 
 #test
-# _create_data_loader(32,448)
+# pretrained_weights = None
+# n_cpu = 1
+# multiscale_training = True
+# train_dir = "train_set.txt"
+# val_dir = "validation_set.txt"
+# ClassesFile = "D:\VOC2012\VOCdevkit\VOC2012\class.data"
+# _create_data_loader(
+#         32,
+#         448,
+#         n_cpu,
+#         train_dir,
+#         ClassesFile,
+#         multiscale_training=True)
