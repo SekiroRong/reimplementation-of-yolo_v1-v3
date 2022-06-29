@@ -1,6 +1,6 @@
-# yolo_v1-v3_repitation
+# reimplementation-of-yolo_v1&v3
 
-Repitation of yolo_v1&v3 
+Reimplementation of yolo_v1&v3 
 
 yolo_v1和v3的复现
 
